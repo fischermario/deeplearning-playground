@@ -1,5 +1,5 @@
-
-# coding: utf-8
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
 # # Fine tuning and creating TRT Model
 # In this notebook we show how to include TensorRT (TRT) 3.0 in a typical deep learning development workflow. The aim is to show you how you can take advantage of TensorRT to dramatically speed up your inference in a simple and straightforward manner.
@@ -15,27 +15,41 @@
 # In the following we import the necessary python packages for this part of the hands-on session
 # 
 
-# In[ ]:
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
 
-
-''' Import Keras Modules '''
+# Import Keras Modules
 from keras.applications.vgg19 import VGG19
 from keras.preprocessing.image import ImageDataGenerator
 from keras.models import Model, load_model
 from keras.layers import Dense, GlobalAveragePooling2D
 from keras import backend as K
+from keras.callbacks import ModelCheckpoint, LearningRateScheduler, TensorBoard, EarlyStopping
 import keras
 
-
-# In[ ]:
-
-
-''' Import Tensorflow Modules '''
+# Import Tensorflow Modules
 import tensorflow as tf
 from tensorflow.python.framework import graph_io
 from tensorflow.python.tools import freeze_graph
 from tensorflow.core.protobuf import saver_pb2
 from tensorflow.python.training import saver as saver_lib
+
+import numpy as np
+from imutils import paths
+import cv2
+import shutil
+import tarfile
+import os
+import sys
+import time
+
+sys.path.append("scripts")
+from conf import config
+
+# set the matplotlib backend so figures can be saved in the background
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 
 # In the two cells above we have imported the python pacakges needed to perform training (fine tuning) In the first cell we have imported Keras with tensorflow backhand. In the second cell we have imported tensorflow and in particular all the routines necessary to save a frozen version of the model. 
@@ -43,41 +57,14 @@ from tensorflow.python.training import saver as saver_lib
 # ### Training configuration
 # In the following we specify configuration parameters that are needed for training 
 
-# In[ ]:
-
-
-config = {
-    # Training params
-    "train_data_dir": "/home/data/train",  # training data
-    "val_data_dir": "/home/data/val",  # validation data 
-    "train_batch_size": 16,  # training batch size
-    "epochs": 3,  # number of training epochs
-    "num_train_samples" : 2936,  # number of training examples
-    "num_val_samples" : 734,  # number of test examples
-
-    # Where to save models (Tensorflow + TensorRT)
-    "graphdef_file": "/home/model/keras_vgg19_graphdef.pb",
-    "frozen_model_file": "/home/model/keras_vgg19_frozen_model.pb",
-    "snapshot_dir": "/home/data/model/snapshot",
-    "engine_save_dir": "/home/model/",
-    
-    # Needed for TensorRT
-    "image_dim": 224,  # the image size (square images)
-    "inference_batch_size": 1,  # inference batch size
-    "input_layer": "input_1",  # name of the input tensor in the TF computational graph
-    "out_layer": "dense_2/Softmax",  # name of the output tensorf in the TF conputational graph
-    "output_size" : 5,  # number of classes in output (5)
-    "precision": "fp32",  # desired precision (fp32, fp16)
-
-    "test_image_path" : "/home/data/val/roses"
-}
-
+class EpochHistory(keras.callbacks.Callback):
+    def on_train_begin(self, logs={}):
+        self.epochs = 0
+    def on_epoch_end(self, epoch, logs={}):
+        self.epochs += 1
 
 # ### Fine-tuning
 # In the following we show how to load the VGG19 model and finetune it with images from the flower dataset. Finally, after fine tuning, we will save the model as a frozen tensorflow graph.
-
-# In[ ]:
-
 
 def finetune_and_freeze_model():
     # create the base pre-trained model
@@ -87,14 +74,14 @@ def finetune_and_freeze_model():
     x = base_model.output
     # let's add a fully-connected layer
     x = Dense(1024, activation='relu')(x)
-    # and a softmax layer -- in this example we have 5 classes
-    predictions = Dense(5, activation='softmax')(x)
+    # and a softmax layer -- in this example we have 2 classes
+    predictions = Dense(config["output_size"], activation='softmax')(x)
 
     # this is the model we will finetune
     model = Model(inputs=base_model.input, outputs=predictions)
 
-    # We want to use the convolutional layers from the pretrained 
-    # VGG19 as feature extractors, so we freeze those layers and exclude 
+    # We want to use the convolutional layers from the pretrained
+    # VGG19 as feature extractors, so we freeze those layers and exclude
     # them from training and train only the new top layers
     for layer in base_model.layers:
         print(layer.get_config())
@@ -102,35 +89,103 @@ def finetune_and_freeze_model():
 
     # compile the model (should be done *after* setting layers to non-trainable)
     model.compile(
-        optimizer=keras.optimizers.Adam(1e-4), 
-        loss='categorical_crossentropy', 
+        optimizer=keras.optimizers.Adam(1e-4),
+        loss='categorical_crossentropy',
         metrics = ['accuracy']
     )
-    
+
+    if not os.path.exists(config['image_data_dir']):
+        print('Extracting images from archive...')
+        t = time.time()
+        with tarfile.open(config['images_file']) as tar:
+            tar.extractall(path=config['images_dir'])
+        print("Extraction done. It took {:.2f} s.".format(time.time() - t))
+
+    if not os.path.exists(config['train_data_dir']):
+        print('Splitting dataset...')
+        t = time.time()
+        if not os.path.exists(config['val_data_dir']):
+            os.mkdir(config['val_data_dir'])
+        shutil.copytree(config['image_data_dir'], config['train_data_dir'])
+        subdirs_created = False
+        for root, subdirs, files in os.walk(config['train_data_dir']):
+            if not subdirs_created:
+                for subdir in sorted(subdirs):
+                    os.mkdir(os.path.join(config['val_data_dir'], subdir))
+                subdirs_created = True
+            sorted_files = sorted(files, reverse=True)
+            # partition the data into training and validation splits using 75% of
+            # the data for training and the remaining 25% for validation
+            for idx in range(0, int(len(sorted_files) * 0.25)):
+                os.rename(os.path.join(root, sorted_files[idx]), os.path.join(config['val_data_dir'], root.split(os.path.sep)[-1], sorted_files[idx]))
+        print("Split done. It took {:.2f} s.".format(time.time() - t))
+
     #create data generators for training/validation
     train_datagen = ImageDataGenerator()
     val_datagen = ImageDataGenerator()
 
     train_generator = train_datagen.flow_from_directory(
         directory=config['train_data_dir'],
-        target_size=(config['image_dim'], config['image_dim']), 
+        target_size=(config['image_dim'], config['image_dim']),
         batch_size=config['train_batch_size']
     )
+
+    config['num_train_samples'] = sum([len(files) for _ , _, files in os.walk(config['train_data_dir'])])
+
+    imagePaths = sorted(list(paths.list_images(config['train_data_dir'])))
+    rgb_mean = [0, 0, 0]
+
+    # loop over the training images
+    for imagePath in imagePaths:
+        image = cv2.imread(imagePath)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB, image, 3)
+        image = cv2.resize(image, (config['image_dim'], config['image_dim']))
+        means = cv2.mean(image)
+        rgb_mean[0] += means[0]
+        rgb_mean[1] += means[1]
+        rgb_mean[2] += means[2]
+
+    print('RGB mean values:')
+    print([color / len(imagePaths) for color in rgb_mean])
 
     val_generator = val_datagen.flow_from_directory(
-        directory=config['val_data_dir'], 
-        target_size=(config['image_dim'], config['image_dim']), 
+        directory=config['val_data_dir'],
+        target_size=(config['image_dim'], config['image_dim']),
         batch_size=config['train_batch_size']
     )
 
+    config['num_val_samples'] = sum([len(files) for _ , _, files in os.walk(config['val_data_dir'])])
+
+    history = EpochHistory()
+
+    checkpoint = ModelCheckpoint(config["model_file"], monitor='val_acc', verbose=1, save_best_only=True, save_weights_only=False, mode='auto', period=1)
+    early = EarlyStopping(monitor='val_acc', min_delta=0, patience=1, verbose=1, mode='auto')
+
     # train the model on the new data for a few epochs
-    model.fit_generator(
-        train_generator, 
-        steps_per_epoch=config['num_train_samples']//config['train_batch_size'], 
-        epochs=config['epochs'], 
-        validation_data=val_generator, 
-        validation_steps=config['num_val_samples']//config['train_batch_size']
+    H = model.fit_generator(
+        train_generator,
+        steps_per_epoch=config['num_train_samples']//config['train_batch_size'],
+        epochs=config['epochs'],
+        validation_data=val_generator,
+        validation_steps=config['num_val_samples']//config['train_batch_size'],
+        callbacks = [checkpoint, early, history]
     )
+
+    #model.save(config["model_file"])
+
+    plt.style.use("ggplot")
+    plt.figure()
+    #N = config['epochs']
+    N = history.epochs # actual number of epochs
+    plt.plot(np.arange(0, N), H.history["loss"], label="train_loss")
+    plt.plot(np.arange(0, N), H.history["val_loss"], label="val_loss")
+    plt.plot(np.arange(0, N), H.history["acc"], label="train_acc")
+    plt.plot(np.arange(0, N), H.history["val_acc"], label="val_acc")
+    plt.title("Training Loss and Accuracy on 3-class Flower-Dataset with VGG19")
+    plt.xlabel("Epoch #")
+    plt.ylabel("Loss/Accuracy")
+    plt.legend(loc="lower left")
+    plt.savefig(config["plot_file"])
 
     # Now, let's use the Tensorflow backend to get the TF graphdef and frozen graph
     K.set_learning_phase(0)
@@ -149,31 +204,29 @@ def finetune_and_freeze_model():
     # to determine the names of your network's input/output layers.
     graph_io.write_graph(inference_graph, '.', config['graphdef_file'])
 
-    # specify which layer is the output layer for your graph. 
+    # specify which layer is the output layer for your graph.
     # In this case, we want to specify the softmax layer after our
-    # last dense (fully connected) layer. 
+    # last dense (fully connected) layer.
     out_names = config['out_layer']
 
     # freeze your inference graph and save it for later! (Tensorflow)
     freeze_graph.freeze_graph(
-        config['graphdef_file'], 
-        '', 
-        False, 
-        checkpoint_path, 
-        out_names, 
-        "save/restore_all", 
-        "save/Const:0", 
-        config['frozen_model_file'], 
-        False, 
+        config['graphdef_file'],
+        '',
+        False,
+        checkpoint_path,
+        out_names,
+        "save/restore_all",
+        "save/Const:0",
+        config['frozen_model_file'],
+        False,
         ""
     )
 
 
-# ### Run fine-tuning
-# Fine-tuning will run for the specified number of epochs
+if __name__ == "__main__":
+    # ### Run fine-tuning
+    # Fine-tuning will run for the specified number of epochs
 
-# In[ ]:
-
-
-finetune_and_freeze_model()
+    finetune_and_freeze_model()
 
