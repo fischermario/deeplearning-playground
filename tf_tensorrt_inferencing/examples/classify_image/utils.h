@@ -42,7 +42,8 @@ void preprocessVgg(float *tensor, nvinfer1::Dims dimensions)
   size_t height = dimensions.d[1];
   size_t width = dimensions.d[2];
   const size_t strides[3] = { height * width, width, 1 };
-  const float mean[3] = { 123.68, 116.78, 103.94 }; // values from TensorFlow slim models code
+  //const float mean[3] = { 123.68, 116.78, 103.94 }; // values from TensorFlow slim models code
+  const float mean[3] = { 111.89, 109.86, 81.55 }; // RGB mean values of flowers dataset
 
   for (int i = 0; i < height; i++) 
   {

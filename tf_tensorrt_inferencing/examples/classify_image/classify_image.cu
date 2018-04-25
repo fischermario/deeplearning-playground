@@ -141,8 +141,8 @@ int main(int argc, char *argv[])
   /* parse output */
   vector<size_t> sortedIndices = argsort(outputDataHost, outputDims);
 
-  cout << "\nThe top-5 indices are: ";
-  for (int i = 0; i < 5; i++)
+  cout << "\nThe top-3 indices are: ";
+  for (int i = 0; i < 3; i++)
     cout << sortedIndices[i] << " ";
 
   ifstream labelsFile(labelFilename);
@@ -161,9 +161,13 @@ int main(int argc, char *argv[])
   }
 
   cout << "\nWhich corresponds to class labels: ";
-  for (int i = 0; i < 5; i++)
+  for (int i = 0; i < 3; i++)
     cout << endl << i << ". " << labelMap[sortedIndices[i]];
   cout << endl;
+
+  cout << "'" << labelMap[0] << "' probability: " << outputDataHost[0] << endl;
+  cout << "'" << labelMap[1] << "' probability: " << outputDataHost[1] << endl;
+  cout << "'" << labelMap[2] << "' probability: " << outputDataHost[2] << endl;
 
   /* clean up */
   runtime->destroy();
