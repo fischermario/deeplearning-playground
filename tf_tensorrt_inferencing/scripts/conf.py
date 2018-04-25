@@ -2,7 +2,6 @@ import os
 
 config = {
     # Training params
-    "images_file": os.path.join(os.getcwd(), "data/images/images.tar.gz"),  # compressed image file
     "images_dir": os.path.join(os.getcwd(), "data/images"),  # images directory
     "image_data_dir": os.path.join(os.getcwd(), "data/images/full_data"),  # all data
     "train_data_dir": os.path.join(os.getcwd(), "data/images/train"),  # training data

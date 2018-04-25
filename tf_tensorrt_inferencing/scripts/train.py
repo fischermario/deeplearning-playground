@@ -97,8 +97,11 @@ def finetune_and_freeze_model():
     if not os.path.exists(config['image_data_dir']):
         print('Extracting images from archive...')
         t = time.time()
-        with tarfile.open(config['images_file']) as tar:
-            tar.extractall(path=config['images_dir'])
+        for file in os.listdir(config['images_dir']):
+            fn_with_path = os.path.join(config['images_dir'], file)
+            if os.path.isfile(fn_with_path) and fn_with_path.endswith('tar.gz'):
+                with tarfile.open(fn_with_path) as tar:
+                    tar.extractall(path=config['images_dir'])
         print("Extraction done. It took {:.2f} s.".format(time.time() - t))
 
     if not os.path.exists(config['train_data_dir']):
